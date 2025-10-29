@@ -4,7 +4,7 @@
 """
 Synopsis:
 ---------
-Memory-efficient Network Share Macro Scanner with enhanced logging for Office files.
+Memory-efficient  Macro Scanner with enhanced logging for Office files.
 
 Description:
 -----------
@@ -55,8 +55,8 @@ except ImportError:
 # Global Configuration Variables
 # =============================================================================
 
-# Input file containing network shares to scan (located on Desktop)
-INPUT_FILE = os.path.join(os.path.expanduser('~'), 'Desktop', 'shares.txt')
+# Input file containing s to scan (located on Desktop)
+INPUT_FILE = os.path.join(os.path.expanduser('~'), 'OneDrive - nab','Desktop','shares.txt')
 
 # Output directory name (created on Desktop)
 OUTPUT_DIR_NAME = 'MetaScanner_Output'
@@ -131,7 +131,7 @@ def setup_logging(output_dir: str) -> logging.Logger:
         Configured logger instance
     """
     timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M')
-    log_file = os.path.join(output_dir, f'SuperN2S-{timestamp}.log')
+    log_file = os.path.join(output_dir, f'MacroScan-{timestamp}.log')
     
     logger = logging.getLogger('NASMacroScanner')
     logger.setLevel(logging.INFO)
@@ -260,7 +260,7 @@ def should_skip_share(share_path: str, output_dir: str, logger: logging.Logger) 
     Check if a share should be skipped based on DAYS_THRESHOLD.
     
     Args:
-        share_path: Path to the network share
+        share_path: Path to the 
         output_dir: Directory containing previous scan results
         logger: Logger instance for recording decisions
         
@@ -284,6 +284,21 @@ def should_skip_share(share_path: str, output_dir: str, logger: logging.Logger) 
     
     return False
 
+def log_scan_outcome(log_path: str, share_path: str, status: str) -> None:
+    """
+    Log scan outcome to the appropriate log file.
+    
+    Args:
+        log_path: Path to the log file (success or failure)
+        share_path: Path to the network share
+        status: Status message to log
+    """
+    with open(log_path, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow([share_path, 
+                        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        status])
+
 def process_share(share_path: str, output_dir: str, logger: logging.Logger) -> None:
     """
     Process all macro-enabled files in a network share with memory-efficient batching.
@@ -293,6 +308,18 @@ def process_share(share_path: str, output_dir: str, logger: logging.Logger) -> N
         output_dir: Directory where output files will be saved
         logger: Logger instance for recording progress
     """
+    # Get paths to global scan logs
+    success_log = os.path.join(output_dir, "scan_success_log.csv")
+    failure_log = os.path.join(output_dir, "scan_failure_log.csv")
+    
+    # Check if share is accessible
+    if not os.path.exists(share_path):
+        msg = f"Share path not found or inaccessible"
+        logger.warning(f"{Fore.YELLOW}{msg}: {share_path}{Style.RESET_ALL}")
+        log_scan_outcome(failure_log, share_path, msg)
+        stats.increment('skipped_permission')
+        return
+    
     # Check if we should skip this share based on DAYS_THRESHOLD
     if should_skip_share(share_path, output_dir, logger):
         return
@@ -304,14 +331,26 @@ def process_share(share_path: str, output_dir: str, logger: logging.Logger) -> N
     temp_csv = create_temp_csv(output_dir)
     file_batch = []
     
+    # Wrap entire share processing in try/except
+    # Wrap entire share processing in try/except
     try:
+        # Create temporary CSV for results
+        temp_csv = create_temp_csv(output_dir)
+        
         # Walk through the share
         for root, dirs, files in os.walk(share_path):
-            stats.increment('folders_scanned')
-            
-            # Log directory information
-            macro_files = [f for f in files if any(f.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)]
-            logger.info(f"Scanning folder: {root} ({len(files)} files, {len(dirs)} subfolders)")
+            try:
+                stats.increment('folders_scanned')
+                
+                # Log directory information
+                macro_files = [f for f in files if any(f.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)]
+                logger.info(f"Scanning folder: {root} ({len(files)} files, {len(dirs)} subfolders)")
+            except PermissionError as pe:
+                logger.error(f"{Fore.RED}Permission denied accessing folder: {root}{Style.RESET_ALL}")
+                continue
+            except Exception as e:
+                logger.error(f"{Fore.RED}Error accessing folder {root}: {str(e)}{Style.RESET_ALL}")
+                continue
             
             if not macro_files:
                 logger.info("No matching files in this folder, moving deeper…")
@@ -362,7 +401,7 @@ def process_share(share_path: str, output_dir: str, logger: logging.Logger) -> N
         share_parts = share_path.strip('\\').split('\\')
         share_identifier = '-'.join(share_parts[-2:] if len(share_parts) >= 2 else share_parts)
         final_csv = os.path.join(output_dir, 
-                               f"{share_identifier}-SuperN2S-{datetime.datetime.now().strftime('%Y%m%d')}.csv")
+                               f"{share_identifier}-MacroScan-{datetime.datetime.now().strftime('%Y%m%d')}.csv")
         
         # Sort and clean up
         with open(temp_csv, 'r', newline='', encoding='utf-8') as temp, \
@@ -384,16 +423,54 @@ def process_share(share_path: str, output_dir: str, logger: logging.Logger) -> N
         
         # Log completion with duration
         duration = datetime.datetime.now() - share_start_time
-        logger.info(f"Completed share: {share_path} (Duration: {duration})")
+        logger.info(f"{Fore.GREEN}✅ Successfully completed scan for '{share_path}' (Duration: {duration}){Style.RESET_ALL}")
         
-    except Exception as e:
-        logger.error(f"Error processing share {share_path}: {str(e)}")
+        # Log successful completion
+        log_scan_outcome(success_log, share_path, "Success")
+        
+    except PermissionError as pe:
+        error_msg = f"Failed: PermissionError at root"
+        logger.error(f"{Fore.RED}Error scanning '{share_path}': {str(pe)}{Style.RESET_ALL}")
+        log_scan_outcome(failure_log, share_path, error_msg)
         if os.path.exists(temp_csv):
             try:
                 os.remove(temp_csv)
                 logger.info("Cleaned up temporary files after error")
             except:
                 pass
+    
+    except Exception as e:
+        error_msg = f"Failed: {str(e)}"
+        logger.error(f"{Fore.RED}Error scanning '{share_path}': {str(e)}{Style.RESET_ALL}")
+        log_scan_outcome(failure_log, share_path, error_msg)
+        if os.path.exists(temp_csv):
+            try:
+                os.remove(temp_csv)
+                logger.info("Cleaned up temporary files after error")
+            except:
+                pass
+
+def init_scan_logs(output_dir: str) -> Tuple[str, str]:
+    """
+    Initialize the global success and failure log files.
+    
+    Args:
+        output_dir: Directory where log files will be created
+        
+    Returns:
+        Tuple containing paths to success and failure logs
+    """
+    success_log = os.path.join(output_dir, "scan_success_log.csv")
+    failure_log = os.path.join(output_dir, "scan_failure_log.csv")
+    
+    # Initialize log headers if missing
+    for log_path in [success_log, failure_log]:
+        if not os.path.exists(log_path):
+            with open(log_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['SharePath', 'ScanDate', 'Status'])
+    
+    return success_log, failure_log
 
 def main():
     """Main execution function that handles setup, user input, and coordinates scanning."""
@@ -404,9 +481,12 @@ def main():
     output_dir = os.path.join(desktop_path, OUTPUT_DIR_NAME)
     os.makedirs(output_dir, exist_ok=True)
     
+    # Initialize global scan logs
+    SCAN_SUCCESS_LOG, SCAN_FAILURE_LOG = init_scan_logs(output_dir)
+    
     # Setup logging
     logger = setup_logging(output_dir)
-    logger.info("Starting Network Share Macro Scanner...")
+    logger.info("Starting  Macro Scanner...")
     
     # Verify input file exists
     if not os.path.exists(INPUT_FILE):
